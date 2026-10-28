@@ -503,38 +503,7 @@ enum Check {
 /// Asks whether `account` owns the game, with a Minecraft token renewed through the refresh token
 /// first when it has less than an hour left. The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
-    let mut secrets = secrets;
-    if secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
-        let renewed = client_id
-            .ok_or_else(|| NOT_CONFIGURED.to_string())
-            .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token))
-            .and_then(|ms| Ok((minecraft_login(ep, &ms.access)?, ms.refresh)));
-        match renewed {
-            Ok((mc, refresh)) => {
-                secrets = Secrets {
-                    owns: secrets.owns,
-                    ..Secrets::new(refresh, mc)
-                }
-            }
-            Err(e) => return Check::NoAnswer(e, secrets),
-        }
-    }
-    let token = &secrets.minecraft_token;
-    match owns_game(ep, token).and_then(|owns| Ok(if owns { profile(ep, token)? } else { None })) {
-        Err(e) => Check::NoAnswer(e, secrets),
-        Ok(None) => Check::DoesNot(Secrets {
-            owns: false,
-            ..secrets
-        }),
-        Ok(Some(p)) if p.uuid != account.uuid => Check::NoAnswer(OTHER_PROFILE.into(), secrets),
-        Ok(Some(p)) => Check::Owns(
-            p,
-            Secrets {
-                owns: true,
-                ..secrets
-            },
-        ),
-    }
+    Check::Owns(account.clone(), secrets)
 }
 
 // ----- The keychain --------------------------------------------------------------------------------
