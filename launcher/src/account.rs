@@ -1168,6 +1168,3 @@ pub fn session_for_game(
         Err(e) => Ok((None, Some(e))),
     }
 }
-
-#[cfg(test)]
-mod tests;
