@@ -258,12 +258,23 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Notes
+      # The release notes are the build hash alone: no `tools/release_train.py notes`, no commit-range
+      # summarising. The title is the tag plus the short commit, the body is the full commit.
+      - name: Notes from the build hash
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.decide.outputs.tag }}
+          HEAD: ${{ needs.decide.outputs.head }}
         run: |
-          python3 tools/release_train.py notes --kind launcher --tag "${{ needs.decide.outputs.tag }}" \
-            --head "${{ needs.decide.outputs.head }}" --out notes > /dev/null
+          short="${HEAD:0:9}"
+          mkdir -p notes
+          echo "$TAG ($short)" > notes/title.txt
+          {
+            echo "Built from \`$HEAD\`."
+            echo
+            echo "- Tag: \`$TAG\`"
+            echo "- Commit: \`$HEAD\`"
+            echo "- Short: \`$short\`"
+          } > notes/body.md
           { echo "## $(cat notes/title.txt)"; echo; cat notes/body.md; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v8
         with:
