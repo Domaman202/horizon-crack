@@ -1,90 +1,316 @@
-name: release
-# Automatic game releases (docs/release-flow.md). Horizon ships only the Nightly since 2026-10-28 (Ludovic): this
-# workflow is the batch train that decides when a new Nightly goes out, and `nightly build` (nightly-build.yml) builds,
-# signs and publishes it. After every green `checks` run on main, every 10 minutes (so a batch waiting for merges to
-# settle goes out without another merge) and by hand, tools/release_train.py decides, for a commit whose checks and
-# parity-main (the vanilla harnesses on main) both passed: a Nightly when 5 pull requests merged since the published
-# Nightly changed what players run and the newest merged 5 minutes ago, or when the oldest has waited 6 hours, or at
-# once for a pull request labelled release-now. RELEASES_PAUSED=1 (repository variable) stops it; so does an open issue
-# labelled release-blocker, forced runs too (nightly-build.yml checks again before publishing). One Nightly build at a
-# time, at most 12 a day (release-now and force=true pass the cap). No `vX.Y.Z` game release is made any more.
-#   gh workflow run release --ref <branch>                       # dry run: decides, starts nothing
-#   gh workflow run release -f dry_run=false -f force=true       # on main: a Nightly now, whatever the rules say
+name: launcher
+# Builds the launcher on Linux, Windows x64 and ARM64, and releases it by itself (docs/release-flow.md): after a
+# push to main that changes the launcher or a crate it builds in (the paths below),
+# every 10 minutes (a release waiting for merges to settle goes out) and by hand, tools/release_train.py decides as
+# for the game.
+# A release is launcher@X.Y.Z on the release line in .github/release-line.txt (docs/versioning.md); without it
+# launcher-vX.Y.Z, the patch after the last launcher tag or the next minor when a merged pull request is labelled
+# feature. The version and the tag are given to the build (HORIZON_LAUNCHER_VERSION, HORIZON_LAUNCHER_TAG): no bump
+# commits.
+# Never marked latest. Pushes to launcher branches only build. RELEASES_PAUSED=1 stops releases.
+# Linux ships two archives of one binary: the .tar.gz the launcher updates itself from, and an
+# AppImage (packaging/linux/appimage.sh) for players without a distribution package, which replaces
+# itself instead (launcher/src/backend.rs).
+# Windows ships each architecture's launcher in its ZIP (what a launcher updates itself from) and as
+# horizon-launcher-setup.exe or horizon-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
+# (launcher/src/installer.rs).
+#   gh workflow run launcher --ref <branch>                    # dry run: builds everything, publishes nothing
+#   gh workflow run launcher --ref main -f dry_run=false -f force=true
+
 on:
-  workflow_run:
-    # A game release ships a commit both passed on (parity-main runs on batches: the newest commit it passed on).
-    workflows: [checks, parity-main]
-    types: [completed]
-    branches: [main]
+  push:
+    branches: [main, launcher, 'launcher-*']
+    paths:
+      # Everything the launcher is built and packaged from, as tools/release_train.py's LAUNCHER_PATHS.
+      - 'launcher/**'
+      - 'crates/horizon-bench/**'
+      - 'crates/horizon-friends/**'
+      - 'crates/horizon-mcp/**'
+      - 'crates/horizon-mods/**'
+      - 'crates/horizon-port-pack/**'
+      - 'crates/horizon-prepare/**'
+      - 'crates/horizon-release-sign/**'
+      - 'crates/horizon-telemetry/**'
+      - 'crates/horizon-theme/**'
+      - 'packaging/linux/**'
+      - 'packaging/icons/**'
+      - '.github/workflows/launcher.yml'
   schedule:
-    - cron: '2-59/10 * * * *'
+    - cron: '7-59/10 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Decide only; start no Nightly build
+        description: Build everything and write the notes, but publish nothing
         type: boolean
         default: true
       force:
-        description: A Nightly even without player-facing changes, before merges settle, while paused or past the day's cap
+        description: Release even without launcher changes, before merges settle or while paused
         type: boolean
         default: false
+
 permissions:
   contents: read
-  # The open release-blocker issues (decide).
-  issues: read
-  # The checks, parity-main and nightly build runs (decide).
-  actions: read
+
 concurrency:
-  # One release at a time. A hand-started dry run publishes nothing, so it can't race a real release: it gets a
-  # group of its own. In the shared group, a release queued behind it replaced it as the pending run and GitHub
-  # cancelled it (#2779's dry run, 2026-10-27), which happens all day while releases go out in batches.
-  group: game-release${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '-dry-run' || '' }}
+  group: launcher-${{ github.ref == 'refs/heads/main' && 'release' || github.ref }}
   cancel-in-progress: false
+
 jobs:
   decide:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       release: ${{ steps.decide.outputs.release }}
+      tag: ${{ steps.decide.outputs.tag }}
       head: ${{ steps.decide.outputs.head }}
-      urgent: ${{ steps.decide.outputs.urgent }}
+      version: ${{ steps.decide.outputs.version }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: mode
-        # A dry run never publishes; a hand-started run off main is always one.
-        run: echo "dry_run=${{ github.event_name == 'workflow_dispatch' && (inputs.dry_run || github.ref != 'refs/heads/main') }}" >> "$GITHUB_OUTPUT"
+        # Off main every run is a dry run (a launcher branch's push only builds).
+        run: echo "dry_run=${{ github.ref != 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}" >> "$GITHUB_OUTPUT"
       - id: decide
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASES_PAUSED: ${{ vars.RELEASES_PAUSED }}
-          # The commit whose checks or parity-main just passed; a dry run builds the branch it was started on;
-          # otherwise main's newest commit with green checks and parity-main.
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || (steps.mode.outputs.dry_run == 'true' && github.sha) || '' }}
+          # A push or a run off main builds its own commit; otherwise main's newest commit with green checks.
+          HEAD_SHA: ${{ (github.event_name == 'push' || steps.mode.outputs.dry_run == 'true') && github.sha || '' }}
           FORCE: ${{ inputs.force && 'yes' || '' }}
         run: |
-          python3 tools/release_train.py decide --kind game ${HEAD_SHA:+--head "$HEAD_SHA"} ${FORCE:+--force} | tee decision.json
+          python3 tools/release_train.py decide --kind launcher ${HEAD_SHA:+--head "$HEAD_SHA"} ${FORCE:+--force} | tee decision.json
           echo "### $(jq -r '.reason' decision.json)" >> "$GITHUB_STEP_SUMMARY"
+          tag=$(jq -r '.tag' decision.json)
+          version=${tag#launcher-v}
+          echo "version=${version#launcher@}" >> "$GITHUB_OUTPUT"
+          # A dry run (and a launcher branch's push) builds whatever the decision.
+          if [[ "${{ steps.mode.outputs.dry_run }}" == true ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "head=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
 
-  nightly:
-    # The Nightly is the release: nightly-build.yml builds the decided commit plus the reviewers' picks, signs it for
-    # the Nightly channel and publishes it once its smoke test passed and no release-blocker is open.
+  build:
     needs: decide
-    if: needs.decide.outputs.release == 'true' && needs.decide.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write  # starts `nightly build`
+    if: needs.decide.outputs.release == 'true'
+    name: build ${{ matrix.name }}
+    # Windows ARM64 is new: its failure never holds the other platforms' release (the signing job
+    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # ARM64 files out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+            asset: horizon-launcher-linux-x86_64.tar.gz
+            binary: horizon-launcher
+          - name: windows
+            os: windows-latest
+            asset: horizon-launcher-windows-x64.zip
+            binary: horizon-launcher.exe
+            pe_arch: x64
+            setup_asset: horizon-launcher-setup.exe
+            # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
+            # which only the Visual C++ redistributable installs.
+            rustflags: -C target-feature=+crt-static
+          - name: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            asset: horizon-launcher-windows-arm64.zip
+            binary: horizon-launcher.exe
+            pe_arch: arm64
+            setup_asset: horizon-launcher-setup-arm64.exe
+            # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
+            rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      # Where cargo puts the launcher: target/release, or target/<target>/release for another target.
+      BIN: ${{ matrix.target && format('target/{0}/release', matrix.target) || 'target/release' }}
+      # Horizon's Azure app for Microsoft sign-in (docs/microsoft-account.md): a repository
+      # variable, not a secret. Unset, the launcher says sign-in is not configured.
+      HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+      # The mod browser's CurseForge source (docs/mod-browser.md#curseforge): a repository secret. Unset, the
+      # launcher searches Modrinth only.
+      HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
+      # The release's version and tag, built in (launcher/src/backend.rs VERSION and own_tag: the tag says which
+      # line it is on, docs/versioning.md); a launcher branch's build keeps Cargo.toml's.
+      HORIZON_LAUNCHER_VERSION: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.version || '' }}
+      HORIZON_LAUNCHER_TAG: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.tag || '' }}
+    defaults:
+      run:
+        working-directory: launcher
+        shell: bash
     steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ needs.decide.outputs.head }}
-          URGENT: ${{ needs.decide.outputs.urgent }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          persist-credentials: false
+          # Always from a clean checkout: nothing a pull request's parity job left may end up in a launcher release
+          # (target/ is rebuilt from scratch).
+          clean: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          workspaces: launcher
+          shared-key: launcher-${{ matrix.name }}
+      - name: Linux libraries GPUI links to
+        if: runner.os == 'Linux'
         run: |
-          gh workflow run nightly-build.yml --repo "$GITHUB_REPOSITORY" --ref main -f base="$HEAD_SHA" -f urgent="$URGENT"
-          echo "### Started \`nightly build\` on ${HEAD_SHA:0:9}" >> "$GITHUB_STEP_SUMMARY"
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev patchelf
+      - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - name: Verify Windows executable architecture
+        if: runner.os == 'Windows'
+        run: python ../tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$BIN/${{ matrix.binary }}"
+      - name: The version is the release's
+        run: |
+          out=$("$BIN/${{ matrix.binary }}" --version)
+          echo "$out"
+          expected="${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
+          [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected"; exit 1; }
+      - name: Only system libraries
+        if: runner.os == 'Windows'
+        run: python ../tools/check_imports.py "$BIN/${{ matrix.binary }}"
+      - name: Package
+        run: |
+          rm -rf dist out && mkdir -p out
+          version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # The .tar.gz below is what the launcher updates itself from; the AppImage is what a
+            # player downloads and double-clicks, and it replaces itself instead
+            # (packaging/linux/appimage.sh, launcher/src/backend.rs).
+            ../packaging/linux/appimage.sh "$BIN/${{ matrix.binary }}" "$version" out
+          fi
+          mkdir -p dist
+          cp "$BIN/${{ matrix.binary }}" dist/
+          if [[ "${{ matrix.asset }}" == *.tar.gz ]]; then
+            (cd dist && tar czf ../out/${{ matrix.asset }} ${{ matrix.binary }})
+          else
+            (cd dist && 7z a ../out/${{ matrix.asset }} ${{ matrix.binary }})
+          fi
+          ls -l out
+      - name: Setup exe (Windows)
+        # The launcher's binary under another name: started with no arguments it shows the per-user
+        # installer instead of Home (launcher/src/installer.rs). Its name is what makes it the setup,
+        # so the ZIP's copy stays the launcher. Both go into the release's signed SHA256SUMS.
+        if: runner.os == 'Windows'
+        run: cp "$BIN/${{ matrix.binary }}" "out/${{ matrix.setup_asset }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: launcher/out/*
+          retention-days: 3
+
+  sign:
+    needs: [decide, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The only job that holds the release signing key, a secret of the `release` environment, which only main's real
+    # releases enter (dry runs sign with a throwaway key). It runs no code from the repository but
+    # tools/ci/sign_release.sh, which calls only the runner's sha256sum and OpenSSL (docs/release-flow.md).
+    environment: ${{ needs.decide.outputs.dry_run != 'true' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: tools/ci/sign_release.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: horizon-launcher-*
+          merge-multiple: true
+      - name: Sign the checksums (SHA256SUMS, SHA256SUMS.sig)
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY_NEXT: ${{ secrets.RELEASE_SIGNING_KEY_NEXT }}
+          EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: bash tools/ci/sign_release.sh "$TAG" dist/horizon-launcher-*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signature
+          path: dist/SHA256SUMS*
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@v7
+        if: needs.decide.outputs.dry_run == 'true'
+        with:
+          name: ephemeral.pub
+          path: dist/ephemeral.pub
+          retention-days: 3
+
+  release:
+    needs: [decide, build, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The release notes are the build hash alone: no `tools/release_train.py notes`, no commit-range
+      # summarising. The title is the tag plus the short commit, the body is the full commit.
+      - name: Notes from the build hash
+        env:
+          TAG: ${{ needs.decide.outputs.tag }}
+          HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          short="${HEAD:0:9}"
+          mkdir -p notes
+          echo "$TAG ($short)" > notes/title.txt
+          {
+            echo "Built from \`$HEAD\`."
+            echo
+            echo "- Tag: \`$TAG\`"
+            echo "- Commit: \`$HEAD\`"
+            echo "- Short: \`$short\`"
+          } > notes/body.md
+          { echo "## $(cat notes/title.txt)"; echo; cat notes/body.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: The signature, checked as launchers check it
+        env:
+          TAG: ${{ needs.decide.outputs.tag }}
+          EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
+        run: |
+          key=(); [[ -n "$EPHEMERAL" ]] && key=(--key "$(cat dist/ephemeral.pub)")
+          cargo run --locked --quiet -p horizon-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist
+      # Never marked latest: Horizon's own releases stay the repository's latest.
+      - name: The Windows ARM64 launcher, if it built
+        # Its build may fail without holding the release (continue-on-error): the release then has no ARM64
+        # files, and ARM64 launchers stay on their version until one has (backend::launcher_update_from).
+        run: |
+          for file in horizon-launcher-windows-arm64.zip horizon-launcher-setup-arm64.exe; do
+            [[ -f "dist/$file" ]] || echo "::warning::$file is missing: this release goes out without it"
+          done
+      - name: Publish ${{ needs.decide.outputs.tag }}
+        if: needs.decide.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          signature=(); [[ -f dist/SHA256SUMS.sig ]] && signature=(dist/SHA256SUMS.sig)
+          gh release create "$TAG" --target "${{ needs.decide.outputs.head }}" --title "$(cat notes/title.txt)" \
+            --notes-file notes/body.md --latest=false dist/horizon-launcher-* dist/SHA256SUMS "${signature[@]}"
+      - name: Dry run, the release that would be published
+        if: needs.decide.outputs.dry_run == 'true'
+        run: |
+          echo "Would publish ${{ needs.decide.outputs.tag }} at ${{ needs.decide.outputs.head }}: $(cat notes/title.txt)"
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: launcher-release-notes
+          path: notes/
+          retention-days: 3
