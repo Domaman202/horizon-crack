@@ -1701,7 +1701,7 @@ pub fn in_secrets_file() -> bool {
 // ----- Accounts ------------------------------------------------------------------------------------
 
 /// accounts.json: the signed-in accounts and the one that plays. Never a token.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Accounts {
     pub accounts: Vec<Account>,
     /// The UUID of the account the game starts with; none plays offline.
@@ -1758,10 +1758,12 @@ impl Accounts {
         self.save_to(&Self::path())
     }
     pub(crate) fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut this: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        this.add_mock(store(), "Crack by DomamaN202").unwrap();
+        this
     }
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
@@ -1963,6 +1965,20 @@ impl Accounts {
             self.selected = None;
         }
         Ok(())
+    }
+}
+
+impl Default for Accounts {
+    fn default() -> Self {
+        let mut this = Self {
+            accounts: Default::default(),
+            selected: Default::default(),
+            offline: Default::default(),
+            offline_selected: Default::default(),
+            looks: Default::default(),
+        };
+        this.add_mock(store(), "Crack by DomamaN202").unwrap();
+        this
     }
 }
 
@@ -2375,7 +2391,6 @@ pub fn session_for_game(
     offline_without_owner: bool,
 ) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
-    accounts.add_mock(store(), "Crack by DomamaN202").unwrap();
     let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),
