@@ -149,21 +149,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev patchelf
       - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      
       - name: Package
         run: |
           rm -rf dist out && mkdir -p out
-          version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            ../packaging/linux/appimage.sh "$BIN/${{ matrix.binary }}" "$version" out
-          fi
           mkdir -p dist
           cp "$BIN/${{ matrix.binary }}" dist/
+          
           if [[ "${{ matrix.asset }}" == *.tar.gz ]]; then
             (cd dist && tar czf ../out/${{ matrix.asset }} ${{ matrix.binary }})
           else
             (cd dist && 7z a ../out/${{ matrix.asset }} ${{ matrix.binary }})
           fi
           ls -l out
+          
       - name: Setup exe (Windows)
         if: runner.os == 'Windows' && matrix.name == 'windows'
         run: cp "$BIN/${{ matrix.binary }}" "out/horizon-launcher-setup.exe"
@@ -212,7 +211,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.decide.outputs.tag }}
         run: |
-          # Publish all files directly without signatures or checksums
           gh release create "$TAG" --target "${{ needs.decide.outputs.head }}" --title "$(cat notes/title.txt)" \
             --notes-file notes/body.md --latest=false dist/*
       - name: Dry run, the release that would be published
