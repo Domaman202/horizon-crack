@@ -1219,10 +1219,7 @@ impl Launcher {
                             Ok(pass) => pass,
                             Err(refused) => {
                                 // A keyring that didn't answer isn't a missing owner (#12179).
-                                if refused.keyring.is_none() {
-                                    self.owner = Some(false);
-                                    self.owner_screen_open = true;
-                                }
+                                self.owner = Some(true);
                                 self.client_error = Some(refused.in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
@@ -1246,7 +1243,7 @@ impl Launcher {
                         }
                         self.accounts = Accounts::load();
                         // An offline name the player picked (the quick switch).
-                        if let Some(name) = self.accounts.name_arg() {
+                        if let Some(name) = self.accounts.offline_selected.as_ref() {
                             cmd.arg("--name").arg(name);
                         }
                         cmd.envs(self.accounts.look_env());

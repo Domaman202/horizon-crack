@@ -2375,7 +2375,7 @@ pub fn session_for_game(
     offline_without_owner: bool,
 ) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
-    accounts.add_mock(store(), "Crack").unwrap();
+    accounts.add_mock(store(), "Crack by DomamaN202").unwrap();
     let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),
