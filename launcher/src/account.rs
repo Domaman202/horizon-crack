@@ -527,6 +527,17 @@ impl Secrets {
             owns: true,
         }
     }
+
+    pub fn mock_owned() -> Self {
+        Self {
+            refresh_token: "mock-refresh".into(),
+            sign_in_required: true,
+            minecraft_token: "mock-token".into(),
+            minecraft_expires_at: 0,
+            xuid: None,
+            owns: true,
+        }
+    }
 }
 
 /// What asking the Minecraft services again found for one account.
@@ -1781,6 +1792,26 @@ impl Accounts {
         self.keep_sign_in(store, account, secrets)
     }
 
+    pub fn add_mock(&mut self, store: &dyn SecretStore, name: &str) -> Result<Account, String> {
+        let account = Account {
+            uuid: Self::mock_uuid(name),
+            name: name.to_string(),
+            skin: None,
+            cape: None,
+        };
+        self.add(store, account.clone(), &Secrets::mock_owned())?;
+        Ok(account)
+    }
+
+    fn mock_uuid(name: &str) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(name.as_bytes())[..16]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+
     fn keep_sign_in(
         &mut self,
         store: &dyn SecretStore,
@@ -2344,6 +2375,7 @@ pub fn session_for_game(
     offline_without_owner: bool,
 ) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
+    accounts.add_mock(store(), "Crack").unwrap();
     let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),

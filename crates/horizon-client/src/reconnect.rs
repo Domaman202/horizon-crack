@@ -18,47 +18,7 @@ pub const STABLE: Duration = Duration::from_secs(60);
 /// plain reasons (OS errors, servers' literal kicks), whose language is
 /// the server's own.
 pub fn allowed(reason: &str, key: Option<&str>, from_server: bool) -> bool {
-    if let Some(decision) = key.and_then(classified_key) {
-        return decision;
-    }
-    let r = reason.to_lowercase();
-    // Kicks, bans, whitelists, version refusals and the account's session
-    // refusals (`disconnect.loginFailedInfo.*` but the unreachable session
-    // servers, the server's failed username check, joining an online-mode
-    // server without an account): never.
-    const NEVER: [&str; 13] = [
-        "ban",
-        "kick",
-        "white-list",
-        "whitelist",
-        "incompatible",
-        "outdated",
-        "another location",
-        "online mode",
-        "invalid server address",
-        "invalid session",
-        "multiplayer is disabled",
-        "failed to verify username",
-        "microsoft account",
-    ];
-    if NEVER.iter().any(|w| r.contains(w)) {
-        return false;
-    }
-    if !from_server {
-        return true;
-    }
-    // The server going away for a while: vanilla's shutdown and time-out
-    // reasons, a full server, a slow login, the server's own session
-    // servers being down, and restart messages.
-    const RETRY: [&str; 6] = [
-        "server closed",
-        "timed out",
-        "the server is full",
-        "took too long to log in",
-        "authentication servers",
-        "restart",
-    ];
-    RETRY.iter().any(|w| r.contains(w))
+    true
 }
 
 /// The key lists' key-based counterpart: `Some` when the key alone
