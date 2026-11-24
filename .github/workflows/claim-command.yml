@@ -11,8 +11,6 @@ name: claim command
 on:
   issue_comment:
     types: [created]
-  schedule:
-    - cron: "23 5 * * *"
   workflow_dispatch:
 permissions:
   contents: read
