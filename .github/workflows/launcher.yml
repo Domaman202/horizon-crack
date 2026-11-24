@@ -28,8 +28,6 @@ on:
       - 'packaging/linux/**'
       - 'packaging/icons/**'
       - '.github/workflows/launcher.yml'
-  schedule:
-    - cron: '7-59/10 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
